@@ -1,3 +1,3 @@
 **Sphere project**
 
-![img.png](initial_sphere.png)
+![The sphere at the third commit](initial_sphere.png)
