@@ -1,0 +1,16 @@
+[package]
+name = "fltk-opengl-test"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+fltk = { git = "https://github.com/fltk-rs/fltk-rs.git", branch = "master", features = ["enable-glwindow"] }
+glu-sys = "0.1.4"
+
+[profile.release]
+panic = "abort"     # abort immediately rather than unwind, removes need for extra unwinding code; smaller binary
+strip = "symbols"   # remove symbols from binary; smaller binary
+opt-level = 's'     # z is for smallest possible binary including no loop vectorization, 3 is most speed, 0 for faster compilation
+codegen-units = 1   # Reduce Parallel Code Generation Units to Increase Optimization
+lto = true          # longer compile time, more optimization
+incremental = false # recompile fully to ensure optimizations
