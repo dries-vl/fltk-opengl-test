@@ -1,3 +1,5 @@
+#![windows_subsystem="windows"]
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -109,8 +111,8 @@ void main()
     let shader_program = shader_utils::link_program(vertex_shader, fragment_shader);
 
     // Setup vertex data and buffers and configure vertex attributes
-    let vertices = icosahedron::get_vertices();
-    let indices = icosahedron::get_indices();
+    let (raw_vertices, indices) = icosahedron::get_vertices();
+    let vertices: Vec<f32> = raw_vertices.into_iter().flatten().collect();
     let mut vbo = 0;
     let mut vao = 0;
     let mut ebo = 0;
@@ -133,7 +135,7 @@ void main()
         gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, ebo);
         gl::BufferData(
             gl::ELEMENT_ARRAY_BUFFER,
-            (indices.len() * std::mem::size_of::<u32>()) as isize,
+            (indices.len() * std::mem::size_of::<u16>()) as isize,
             indices.as_ptr() as *const _,
             gl::STATIC_DRAW,
         );
@@ -212,6 +214,7 @@ void main()
     unsafe {
         gl::ClearColor(0.1, 0.1, 0.1, 1.0); // Clear color
         gl::Enable(gl::DEPTH_TEST); // Enable depth test
+        gl::Disable(gl::CULL_FACE);
     }
 
     check_gl_error("During initialization");
@@ -238,15 +241,7 @@ void main()
     const DRAG_SPEED: f32 = 0.2;
 
     wind.draw(move |_| {
-        draw_sphere(
-            &shader_program,
-            vao,
-            &vertices,
-            &indices,
-            &camera_coordinates_rc.borrow(),
-            *camera_zoom_rc.borrow(),
-            &camera_rotation_rc.borrow(),
-        );
+        draw_sphere(&shader_program, vao, &vertices, &indices, &camera_coordinates_rc.borrow(), *camera_zoom_rc.borrow(), &camera_rotation_rc.borrow());
     });
     let key_states = Rc::new(RefCell::new(HashMap::new()));
 
@@ -348,15 +343,7 @@ void main()
     }
 }
 
-fn draw_sphere(
-    shader_program: &gl::types::GLuint,
-    vao: GLuint,
-    vertices: &Vec<f32>,
-    indices: &Vec<u16>,
-    camera_coordinate: &(f32, f32),
-    zoom: f32,
-    camera_rotation: &(f32, f32),
-) {
+fn draw_sphere(shader_program: &gl::types::GLuint, vao: GLuint, vertices: &Vec<f32>, indices: &Vec<u16>, camera_coordinate: &(f32, f32), zoom: f32, camera_rotation: &(f32, f32)) {
     unsafe {
         // Clear the screen and depth buffer
         gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
@@ -373,11 +360,9 @@ fn draw_sphere(
             ptr::null(),
         );
 
-        let camera_x =
-            zoom * camera_coordinate.0.to_radians().cos() * camera_coordinate.1.to_radians().cos();
+        let camera_x = zoom * camera_coordinate.0.to_radians().cos() * camera_coordinate.1.to_radians().cos();
         let camera_y = zoom * camera_coordinate.1.to_radians().sin();
-        let camera_z =
-            zoom * camera_coordinate.0.to_radians().sin() * camera_coordinate.1.to_radians().cos();
+        let camera_z = zoom * camera_coordinate.0.to_radians().sin() * camera_coordinate.1.to_radians().cos();
         // let rotation_matrix = Matrix4::from_angle_y(Deg(camera_rotation.0)) * Matrix4::from_angle_x(Deg(camera_rotation.1));
         // let translation_matrix = Matrix4::from_translation(vec3(-camera_x, -camera_y, -camera_z));
         // let view_matrix = rotation_matrix * translation_matrix;

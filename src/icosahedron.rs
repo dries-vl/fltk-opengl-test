@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 const PHI: f32 = (1.0 + 2.23606) / 2.0; // 2.236 is sqrt(5)
 
 fn calculate_uv(x: f32, y: f32, z: f32) -> [f32; 5] {
@@ -58,7 +60,7 @@ fn compute_normals(vertices: &Vec<[f32; 5]>, indices: &Vec<u16>) -> Vec<[f32; 8]
     final_vertices
 }
 
-pub fn get_vertices() -> Vec<f32> {
+pub fn get_vertices() -> (Vec<[f32; 8]>, Vec<u16>) {
     let vertices = vec![
         calculate_uv(-1.0, PHI, 0.0),
         calculate_uv(1.0, PHI, 0.0),
@@ -74,11 +76,13 @@ pub fn get_vertices() -> Vec<f32> {
         calculate_uv(-PHI, 0.0, 1.0),
     ];
     let indices = get_indices();
-    let vertices_with_normals = compute_normals(&vertices, &indices);
-    vertices_with_normals.into_iter().flatten().collect()
+    let (vertices, indices) = subdivide_icosahedron(&vertices, &indices);
+    let (vertices, indices) = subdivide_icosahedron(&vertices, &indices);
+    let (vertices, indices) = subdivide_icosahedron(&vertices, &indices);
+    (compute_normals(&vertices, &indices), indices)
 }
 
-pub fn get_indices() -> Vec<u16> {
+fn get_indices() -> Vec<u16> {
     vec![
         11, 5, 0, 5, 1, 0, 1, 7, 0, 7, 10, 0, 10, 11, 0, 5, 9, 1, 11, 4, 5, 10, 2, 11, 7, 6, 10, 1,
         8, 7, 9, 4, 3, 4, 2, 3, 2, 6, 3, 6, 8, 3, 8, 9, 3, 9, 5, 4, 4, 11, 2, 2, 10, 6, 6, 7, 8, 1,
@@ -86,27 +90,64 @@ pub fn get_indices() -> Vec<u16> {
     ]
 }
 
-pub fn convert_triangles_to_lines(triangle_indices: &[u16]) -> Vec<u16> {
-    let mut line_indices = std::collections::HashSet::new();
+fn subdivide_icosahedron(vertices: &Vec<[f32; 5]>, indices: &Vec<u16>) -> (Vec<[f32; 5]>, Vec<u16>) {
+    let mut new_vertices = vertices.clone();
+    let mut new_indices = Vec::new();
+    let mut midpoint_index_cache = HashMap::new();
 
-    for i in (0..triangle_indices.len()).step_by(3) {
-        let a = triangle_indices[i];
-        let b = triangle_indices[i + 1];
-        let c = triangle_indices[i + 2];
+    // Iterate over each triangle and create 4 new ones
+    for chunk in indices.chunks(3) {
+        let v1 = chunk[0] as usize;
+        let v2 = chunk[1] as usize;
+        let v3 = chunk[2] as usize;
 
-        line_indices.insert((a.min(b), a.max(b)));
-        line_indices.insert((b.min(c), b.max(c)));
-        line_indices.insert((c.min(a), c.max(a)));
+        let a = vertex_for_edge(v1, v2, &vertices, &mut new_vertices, &mut midpoint_index_cache);
+        let b = vertex_for_edge(v2, v3, &vertices, &mut new_vertices, &mut midpoint_index_cache);
+        let c = vertex_for_edge(v3, v1, &vertices, &mut new_vertices, &mut midpoint_index_cache);
+
+        new_indices.extend_from_slice(&[chunk[0], a, c]);
+        new_indices.extend_from_slice(&[a, chunk[1], b]);
+        new_indices.extend_from_slice(&[b, chunk[2], c]);
+        new_indices.extend_from_slice(&[a, b, c]);
     }
 
-    let mut line_array: Vec<u16> = line_indices
-        .into_iter()
-        .flat_map(|(min, max)| vec![min, max])
-        .collect();
-    line_array.sort();
-    line_array
+    (new_vertices, new_indices)
 }
 
-pub fn cube_indices_lines() -> Vec<u16> {
-    convert_triangles_to_lines(&get_indices())
+// Function to find or create a vertex
+fn vertex_for_edge(
+    v1: usize,
+    v2: usize,
+    vertices: &Vec<[f32; 5]>,
+    new_vertices: &mut Vec<[f32; 5]>,
+    cache: &mut HashMap<(usize, usize), u16>
+) -> u16 {
+    let key = if v1 < v2 { (v1, v2) } else { (v2, v1) };
+    if let Some(&index) = cache.get(&key) {
+        return index;
+    }
+    let p1 = &vertices[v1];
+    let p2 = &vertices[v2];
+    let mut midpoint = [
+        (p1[0] + p2[0]) / 2.0,
+        (p1[1] + p2[1]) / 2.0,
+        (p1[2] + p2[2]) / 2.0,
+        0.0,  // u, v will be calculated later
+        0.0,
+    ];
+
+    // Normalize to place on unit sphere
+    let length = (midpoint[0] * midpoint[0] + midpoint[1] * midpoint[1] + midpoint[2] * midpoint[2]).sqrt() * 0.5;
+    midpoint[0] /= length;
+    midpoint[1] /= length;
+    midpoint[2] /= length;
+    // Calculate UV coordinates for the new vertex
+    midpoint[3] = 0.5 + (midpoint[2].atan2(midpoint[0]) / (2.0 * std::f32::consts::PI));
+    midpoint[4] = 0.5 - (midpoint[1] / length).asin() / std::f32::consts::PI;
+    midpoint = calculate_uv(midpoint[0], midpoint[1], midpoint[2]);
+
+    let new_index = new_vertices.len() as u16;
+    new_vertices.push(midpoint);
+    cache.insert(key, new_index);
+    new_index
 }
