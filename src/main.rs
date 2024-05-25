@@ -1,4 +1,4 @@
-#![windows_subsystem="windows"]
+// #![windows_subsystem="windows"]
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -11,7 +11,8 @@ use cgmath::{Deg, Matrix, Matrix4, Point3, SquareMatrix, Vector3};
 use fltk::{app, image::IcoImage, prelude::*, window::GlWindow};
 use fltk::app::{event_button, event_dy, event_x, event_y, MouseButton, MouseWheel};
 use fltk::enums::{Event, Key};
-use gl::types::{GLfloat, GLsizei, GLuint};
+use gl::types::{GLchar, GLfloat, GLsizei, GLsizeiptr, GLuint};
+use rand::Rng;
 
 mod icosahedron;
 mod shader_utils;
@@ -32,82 +33,12 @@ fn main() {
     wind.make_current(); // This ensures the OpenGL context is current on this thread
     gl::load_with(|s| wind.get_proc_address(s) as *const _); // This is where you load the OpenGL functions
 
-    // region: -- init shader
-    let vs_src = r#"
-    #version 330 core
-layout (location = 0) in vec3 position;
-layout (location = 2) in vec2 texCoords;
-layout (location = 1) in vec3 normal;  // Input for normals
+    // region: -- sphere
+    let vertex_shader = include_str!("../shaders/vertex.glsl");
+    let fragment_shader = include_str!("../shaders/fragment.glsl");
 
-out vec3 FragPos;
-out vec3 Normal;
-out vec2 TexCoords;
-
-uniform mat4 model;
-uniform mat4 view;
-uniform mat4 projection;
-
-void main()
-{
-    FragPos = vec3(model * vec4(position, 1.0)); // Position in world space
-    Normal = mat3(transpose(inverse(model))) * normal; // Transform normals
-    TexCoords = texCoords;
-    gl_Position = projection * view * model * vec4(position, 1.0);
-}
-    "#;
-
-    let fs_src = r#"
-#version 330 core
-out vec4 FragColor;
-
-in vec3 Normal;
-in vec3 FragPos;
-in vec2 TexCoords;
-
-struct Material {
-    vec3 ambient;
-    vec3 diffuse;
-    vec3 specular;
-    float shininess;
-};
-
-struct Light {
-    vec3 position;
-    vec3 ambient;
-    vec3 diffuse;
-    vec3 specular;
-};
-
-uniform Material material;
-uniform Light light;
-uniform vec3 viewPos;  // Camera position
-uniform sampler2D textureSampler;
-
-void main()
-{
-    // Ambient
-    vec3 ambient = light.ambient * material.ambient;
-    
-    // Diffuse 
-    vec3 norm = normalize(Normal);
-    vec3 lightDir = normalize(light.position - FragPos);
-    float diff = max(dot(norm, lightDir), 0.0);
-    vec3 diffuse = light.diffuse * (diff * material.diffuse);
-    
-    // Specular
-    vec3 viewDir = normalize(viewPos - FragPos);
-    vec3 reflectDir = reflect(-lightDir, norm);
-    float spec = pow(max(dot(viewDir, reflectDir), 0.0), material.shininess);
-    vec3 specular = light.specular * (spec * material.specular);
-    
-    vec3 light = ambient + diffuse + specular;
-    vec3 result = texture(textureSampler, TexCoords).rgb * light;
-    FragColor = vec4(result, 1.0);
-}
-    "#;
-
-    let vertex_shader = shader_utils::compile_shader(vs_src, gl::VERTEX_SHADER);
-    let fragment_shader = shader_utils::compile_shader(fs_src, gl::FRAGMENT_SHADER);
+    let vertex_shader = shader_utils::compile_shader(vertex_shader, gl::VERTEX_SHADER);
+    let fragment_shader = shader_utils::compile_shader(fragment_shader, gl::FRAGMENT_SHADER);
     let shader_program = shader_utils::link_program(vertex_shader, fragment_shader);
 
     // Setup vertex data and buffers and configure vertex attributes
@@ -141,7 +72,7 @@ void main()
         );
 
         // add to gl
-        let stride = 8 * std::mem::size_of::<GLfloat>() as GLsizei; // 5 floats per vertex
+        let stride = 8 * std::mem::size_of::<GLfloat>() as GLsizei; // 8 floats per vertex
         gl::VertexAttribPointer(0, 3, gl::FLOAT, gl::FALSE, stride, ptr::null());
         gl::EnableVertexAttribArray(0); // Position attribute
 
@@ -170,6 +101,14 @@ void main()
 
         gl::UseProgram(shader_program);
 
+        // Add texture
+        // this takes rather long
+        let texture_id = texture::create_texture("C:/Users/dries/dev/fltk-opengl-test/target/debug/earth.png");
+        gl::ActiveTexture(gl::TEXTURE0); // Activate the first texture unit
+        gl::BindTexture(gl::TEXTURE_2D, texture_id);
+        let texture_location = gl::GetUniformLocation(shader_program, CString::new("textureSampler").unwrap().as_ptr());
+        gl::Uniform1i(texture_location, 0);
+
         // lighting
         let light_pos = gl::GetUniformLocation(shader_program, CString::new("light.position").unwrap().as_ptr());
         let light_ambient = gl::GetUniformLocation(shader_program, CString::new("light.ambient").unwrap().as_ptr());
@@ -193,16 +132,48 @@ void main()
         gl::Uniform3fv(material_specular, 1, [0.3, 0.3, 0.3].as_ptr());
         gl::Uniform1f(material_shininess, 32.0); // Shininess factor
 
-        // Add texture
-        // this takes rather long
-        let texture_id = texture::create_texture("C:/Users/dries/dev/fltk-opengl-test/target/debug/earth.png");
-        gl::ActiveTexture(gl::TEXTURE0); // Activate the first texture unit
-        gl::BindTexture(gl::TEXTURE_2D, texture_id);
-        let texture_location = gl::GetUniformLocation(shader_program, CString::new("textureSampler").unwrap().as_ptr());
-        gl::Uniform1i(texture_location, 0);
-
+        // cleanup
         gl::UseProgram(0);
     }
+    // endregion: -- sphere
+
+    // region: -- particles
+    let num_particles = 256;
+    let mut vao_particles = 1;
+    let mut vbo_particles = 1;
+
+    let vertex_shader_particles = include_str!("../shaders/particles_v.glsl");
+    let fragment_shader_particles = include_str!("../shaders/particles_f.glsl");
+
+    let vertex_shader = shader_utils::compile_shader(vertex_shader_particles, gl::VERTEX_SHADER);
+    let fragment_shader = shader_utils::compile_shader(fragment_shader_particles, gl::FRAGMENT_SHADER);
+    let particles_program = shader_utils::link_particles_program(vertex_shader, fragment_shader);
+    unsafe {
+        gl::GenVertexArrays(1, &mut vao_particles);
+        gl::BindVertexArray(vao_particles);
+
+        gl::GenBuffers(1, &mut vbo_particles);
+        gl::BindBuffer(gl::ARRAY_BUFFER, vbo_particles);
+        gl::BindBufferBase(gl::TRANSFORM_FEEDBACK_BUFFER, 0, vbo_particles);
+
+        // Assuming each particle has a position and velocity (each 4 floats)
+        let mut particles: Vec<f32> = Vec::with_capacity(num_particles * 8);
+        for _ in 0..num_particles {
+            particles.extend_from_slice(&[rand::thread_rng().gen_range(1.0..5.0), rand::thread_rng().gen_range(1.0..5.0), rand::thread_rng().gen_range(0.0..5.0), 1.0]);  // Position
+            particles.extend_from_slice(&[rand::thread_rng().gen_range(0.001..0.01), rand::thread_rng().gen_range(0.001..0.01), 0.0, 0.0]);  // Velocity
+        }
+        gl::BufferData(gl::ARRAY_BUFFER,
+                       (particles.len() * std::mem::size_of::<GLfloat>()) as GLsizeiptr,
+                       particles.as_ptr() as *const _,
+                       gl::DYNAMIC_DRAW);
+
+        gl::VertexAttribPointer(0, 4, gl::FLOAT, gl::FALSE, 8 * std::mem::size_of::<GLfloat>() as GLsizei, std::ptr::null());
+        gl::EnableVertexAttribArray(0);
+
+        gl::VertexAttribPointer(1, 4, gl::FLOAT, gl::FALSE, 8 * std::mem::size_of::<GLfloat>() as GLsizei, (4 * std::mem::size_of::<GLfloat>()) as *const _);
+        gl::EnableVertexAttribArray(1);
+    }
+    // endregion: -- particles
 
     // Clean up shaders (they're linked into the program now, so no longer needed separately)
     unsafe {
@@ -219,8 +190,8 @@ void main()
 
     check_gl_error("During initialization");
 
-    // endregion: -- init shader
 
+    // CAMERA
     let camera_zoom = Rc::new(RefCell::new(5.0 as f32)); // Initial zoom distance
     let camera_zoom_rc = camera_zoom.clone();
     let camera_zoom_target = Rc::new(RefCell::new(5.0 as f32));
@@ -240,11 +211,13 @@ void main()
     const ZOOM_SPEED: f32 = 0.2;
     const DRAG_SPEED: f32 = 0.2;
 
+    // window draw call
     wind.draw(move |_| {
-        draw_sphere(&shader_program, vao, &vertices, &indices, &camera_coordinates_rc.borrow(), *camera_zoom_rc.borrow(), &camera_rotation_rc.borrow());
+        draw(&shader_program, &particles_program, vao, vao_particles, &vertices, &indices, &camera_coordinates_rc.borrow(), *camera_zoom_rc.borrow(), &camera_rotation_rc.borrow());
     });
-    let key_states = Rc::new(RefCell::new(HashMap::new()));
 
+    // region: -- windowing
+    let key_states = Rc::new(RefCell::new(HashMap::new()));
     let key_states_rc = key_states.clone();
 
     wind.handle(move |_, ev| {
@@ -334,6 +307,7 @@ void main()
         wind.redraw();
         last_time = current_time;
     }
+    // endregion: -- windowing
 
     // Cleanup resources after the loop ends
     unsafe {
@@ -343,7 +317,7 @@ void main()
     }
 }
 
-fn draw_sphere(shader_program: &gl::types::GLuint, vao: GLuint, vertices: &Vec<f32>, indices: &Vec<u16>, camera_coordinate: &(f32, f32), zoom: f32, camera_rotation: &(f32, f32)) {
+fn draw(shader_program: &gl::types::GLuint, particles_program: &gl::types::GLuint, vao: GLuint, vao_particles: GLuint, vertices: &Vec<f32>, indices: &Vec<u16>, camera_coordinate: &(f32, f32), zoom: f32, camera_rotation: &(f32, f32)) {
     unsafe {
         // Clear the screen and depth buffer
         gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
@@ -378,23 +352,51 @@ fn draw_sphere(shader_program: &gl::types::GLuint, vao: GLuint, vertices: &Vec<f
         let view_loc = gl::GetUniformLocation(*shader_program, CString::new("view").unwrap().as_ptr());
         let proj_loc = gl::GetUniformLocation(*shader_program, CString::new("projection").unwrap().as_ptr());
         let model_loc = gl::GetUniformLocation(*shader_program, CString::new("model").unwrap().as_ptr());
+        let view_pos_location = gl::GetUniformLocation(*shader_program, CString::new("viewPos").unwrap().as_ptr());
         gl::UniformMatrix4fv(view_loc, 1, gl::FALSE, view.as_ptr());
         gl::UniformMatrix4fv(proj_loc, 1, gl::FALSE, projection.as_ptr());
         gl::UniformMatrix4fv(model_loc, 1, gl::FALSE, model.as_ptr());
+        gl::Uniform3fv(view_pos_location, 1, [camera_x, camera_y, camera_z].as_ptr());
 
-        let view_pos_location =
-            gl::GetUniformLocation(*shader_program, CString::new("viewPos").unwrap().as_ptr());
-        gl::Uniform3fv(
-            view_pos_location,
-            1,
-            [camera_x, camera_y, camera_z].as_ptr(),
-        ); // Update with actual camera position
+        // Unbind the VAO and the shader program
+        // gl::BindVertexArray(0);
+        // gl::UseProgram(0);
 
-        check_gl_error("During draw call");
+        // PARTICLES
+        // Bind the shader program and VAO
+        gl::UseProgram(*particles_program);
+        gl::BindVertexArray(vao_particles);
+
+
+        // Enable Transform Feedback and disable rasterization to update particles
+        gl::Enable(gl::RASTERIZER_DISCARD); // Disable rasterization during feedback
+        gl::BeginTransformFeedback(gl::POINTS);
+        gl::DrawArrays(gl::POINTS, 0, 256); // Draw particles to update their positions
+        gl::EndTransformFeedback();
+        gl::Disable(gl::RASTERIZER_DISCARD); // Re-enable rasterization
+
+        // Optionally: Draw the updated particles
+        // To visualize the particles, you would usually draw them again here
+        // For debugging, you can draw them without disabling rasterization to see the update immediately
+        gl::PointSize(100.0);
+        gl::DrawArrays(gl::POINTS, 0, 256); // Draw updated particles
+
+        let view_loc = gl::GetUniformLocation(*particles_program, CString::new("view").unwrap().as_ptr());
+        let proj_loc = gl::GetUniformLocation(*particles_program, CString::new("projection").unwrap().as_ptr());
+        let model_loc = gl::GetUniformLocation(*particles_program, CString::new("model").unwrap().as_ptr());
+        // let view_pos_location = gl::GetUniformLocation(*particles_program, CString::new("viewPos").unwrap().as_ptr());
+        gl::UniformMatrix4fv(view_loc, 1, gl::FALSE, view.as_ptr());
+        gl::UniformMatrix4fv(proj_loc, 1, gl::FALSE, projection.as_ptr());
+        gl::UniformMatrix4fv(model_loc, 1, gl::FALSE, model.as_ptr());
+        // gl::Uniform3fv(view_pos_location, 1, [camera_x, camera_y, camera_z].as_ptr());
+        // END PARTICLES
 
         // Unbind the VAO and the shader program
         gl::BindVertexArray(0);
         gl::UseProgram(0);
+
+        check_gl_error("During draw call");
+
 
         // println!("rotation: {}, {}", camera_rotation.0, camera_rotation.1);
         // println!("position: {}, {}, {}", camera_x, camera_y, camera_z);
