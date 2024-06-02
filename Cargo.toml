@@ -5,7 +5,6 @@ edition = "2021"
 
 [dependencies]
 fltk = { git = "https://github.com/fltk-rs/fltk-rs.git", branch = "master", features = ["enable-glwindow"] }
-#glu-sys = "0.1.4"
 gl = "0.14.0"
 cgmath = "0.18.0"
 image = "0.23.14"

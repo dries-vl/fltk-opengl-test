@@ -24,6 +24,8 @@ uniform Light light;
 uniform vec3 viewPos;
 uniform sampler2D textureSampler;
 
+varying vec3 barys;
+
 void main()
 {
     // Ambient
@@ -42,7 +44,21 @@ void main()
     vec3 specular = light.specular * (spec * material.specular);
 
     vec3 light = ambient + diffuse + specular;
-//    vec3 result = texture(textureSampler, TexCoords).rgb * light;
-    vec3 result = vec3(TexCoords, 0.0);
+    vec2 uv = (TexCoords % vec2(1.0));
+    vec3 result = texelFetch(textureSampler, ivec2(uv * vec2(1080.0, 540.0)), 0).rgb * light;
+    result = (vec3(TexCoords, 0.0) + result) / 2.0;
+    result = vec3(TexCoords, 0.0);
+    if (barys.x < 0.02 || barys.y < 0.02 || barys.z < 0.02) {
+        result = vec3(0.0);
+    }
+//    if (TexCoords.x > 0.95 || TexCoords.x < 0.05) {
+//        result = Normal;
+//    }
+//    if (TexCoords.x > 1.0) {
+//        result += vec3(0.3);
+//    }
+//    else if (TexCoords.x > 0.98) {
+//        result += vec3(0.3, 0.0, 0.0);
+//    }
     FragColor = vec4(result, 1.0);
 }

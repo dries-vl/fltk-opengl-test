@@ -17,6 +17,7 @@ use rand::Rng;
 mod icosahedron;
 mod shader_utils;
 mod texture;
+mod curves;
 
 const W: i32 = 1200;
 const H: i32 = 800;
@@ -61,6 +62,21 @@ fn main() {
             vertices.as_ptr() as *const _,
             gl::STATIC_DRAW,
         );
+        // add to gl
+        let stride = 9 * std::mem::size_of::<GLfloat>() as GLsizei; // 9 floats per vertex
+        // add x, y, z at location 0
+        gl::VertexAttribPointer(0, 3, gl::FLOAT, gl::FALSE, stride, ptr::null());
+        gl::EnableVertexAttribArray(0);
+        // add normals at location 1
+        gl::VertexAttribPointer(1, 3, gl::FLOAT, gl::FALSE, stride, (3 * std::mem::size_of::<GLfloat>()) as *const _);
+        gl::EnableVertexAttribArray(1);
+        // add uv at location 2
+        gl::VertexAttribPointer(2, 2, gl::FLOAT, gl::FALSE, stride, (6 * std::mem::size_of::<GLfloat>()) as *const _);
+        gl::EnableVertexAttribArray(2);
+        // add index at location 3
+        gl::VertexAttribPointer(3, 1, gl::FLOAT, gl::FALSE, stride, (8 * std::mem::size_of::<GLfloat>()) as *const _);
+        gl::EnableVertexAttribArray(3);
+
         // INDICES
         gl::GenBuffers(1, &mut ebo);
         gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, ebo);
@@ -70,32 +86,6 @@ fn main() {
             indices.as_ptr() as *const _,
             gl::STATIC_DRAW,
         );
-
-        // add to gl
-        let stride = 8 * std::mem::size_of::<GLfloat>() as GLsizei; // 8 floats per vertex
-        gl::VertexAttribPointer(0, 3, gl::FLOAT, gl::FALSE, stride, ptr::null());
-        gl::EnableVertexAttribArray(0); // Position attribute
-
-        gl::VertexAttribPointer(
-            1,
-            3,
-            gl::FLOAT,
-            gl::FALSE,
-            stride,
-            (3 * std::mem::size_of::<GLfloat>()) as *const _,
-        );
-        gl::EnableVertexAttribArray(1); // Normal attribute
-
-        gl::VertexAttribPointer(
-            2,
-            2,
-            gl::FLOAT,
-            gl::FALSE,
-            stride,
-            (6 * std::mem::size_of::<GLfloat>()) as *const _,
-        );
-        gl::EnableVertexAttribArray(2); // Texture coordinates attribute
-
         gl::BindBuffer(gl::ARRAY_BUFFER, 0);
         gl::BindVertexArray(0);
 
@@ -116,10 +106,10 @@ fn main() {
         let light_specular = gl::GetUniformLocation(shader_program, CString::new("light.specular").unwrap().as_ptr());
 
         // Assuming you have set Vec3 struct to handle data
-        gl::Uniform3fv(light_pos, 1, [500.0, 500.0, 500.0].as_ptr()); // Example light position
-        gl::Uniform3fv(light_ambient, 1, [0.4, 0.4, 0.4].as_ptr()); // Low intensity ambient light
-        gl::Uniform3fv(light_diffuse, 1, [0.75, 0.75, 0.75].as_ptr()); // Medium intensity diffuse light
-        gl::Uniform3fv(light_specular, 1, [0.3, 0.3, 0.3].as_ptr()); // Strong specular light
+        gl::Uniform3fv(light_pos, 1, [-500.0, 500.0, -500.0].as_ptr()); // Example light position
+        gl::Uniform3fv(light_ambient, 1, [0.5, 0.5, 0.5].as_ptr()); // Low intensity ambient light ~ 0.5 makes sense
+        gl::Uniform3fv(light_diffuse, 1, [1.2, 1.2, 1.2].as_ptr()); // Medium intensity diffuse light ~1.25 makes sense
+        gl::Uniform3fv(light_specular, 1, [0.95, 0.95, 0.95].as_ptr()); // Strong specular light ~0.75 makes sense
 
         // Set material properties
         let material_ambient = gl::GetUniformLocation(shader_program, CString::new("material.ambient").unwrap().as_ptr());
@@ -165,7 +155,7 @@ fn main() {
         gl::BufferData(gl::ARRAY_BUFFER,
                        (particles.len() * std::mem::size_of::<GLfloat>()) as GLsizeiptr,
                        particles.as_ptr() as *const _,
-                       gl::DYNAMIC_DRAW);
+                       gl::STATIC_DRAW);
 
         gl::VertexAttribPointer(0, 4, gl::FLOAT, gl::FALSE, 8 * std::mem::size_of::<GLfloat>() as GLsizei, std::ptr::null());
         gl::EnableVertexAttribArray(0);
@@ -174,6 +164,42 @@ fn main() {
         gl::EnableVertexAttribArray(1);
     }
     // endregion: -- particles
+
+    // region: -- lines
+    let mut vao_lines = 2;
+    let mut vbo_lines = 2;
+
+    let vertex_shader_lines = include_str!("../shaders/lines_v.glsl");
+    let fragment_shader_lines = include_str!("../shaders/lines_f.glsl");
+
+    let vertex_shader = shader_utils::compile_shader(vertex_shader_lines, gl::VERTEX_SHADER);
+    let fragment_shader = shader_utils::compile_shader(fragment_shader_lines, gl::FRAGMENT_SHADER);
+    let lines_program = shader_utils::link_program(vertex_shader, fragment_shader);
+    unsafe {
+        gl::GenVertexArrays(1, &mut vao_lines);
+        gl::BindVertexArray(vao_lines);
+
+        gl::GenBuffers(1, &mut vbo_lines);
+        gl::BindBuffer(gl::ARRAY_BUFFER, vbo_lines);
+
+        // Assuming each particle has a position and velocity (each 4 floats)
+        let line_points_curve = curves::bezier_curve_interpolation(curves::generate_random_bezier_points());
+        let points_on_sphere = curves::points_on_sphere(line_points_curve);
+        let mut float_vec = Vec::with_capacity(points_on_sphere.len() * 4); // Pre-allocate memory for efficiency
+        for (x, y, z) in points_on_sphere {
+            // For each (x, y) tuple, append x, y, 1.0, 1.0 to the new vector
+            float_vec.extend_from_slice(&[x, y, z, 1.0]);
+        }
+        gl::BufferData(gl::ARRAY_BUFFER,
+                       (float_vec.len() * std::mem::size_of::<GLfloat>()) as GLsizeiptr,
+                       float_vec.as_ptr() as *const _,
+                       gl::DYNAMIC_DRAW);
+
+        gl::VertexAttribPointer(0, 4, gl::FLOAT, gl::FALSE, 4 * std::mem::size_of::<GLfloat>() as GLsizei, std::ptr::null());
+        gl::EnableVertexAttribArray(0);
+
+    }
+    // endregion: -- lines
 
     // Clean up shaders (they're linked into the program now, so no longer needed separately)
     unsafe {
@@ -185,7 +211,7 @@ fn main() {
     unsafe {
         gl::ClearColor(0.1, 0.1, 0.1, 1.0); // Clear color
         gl::Enable(gl::DEPTH_TEST); // Enable depth test
-        gl::Disable(gl::CULL_FACE);
+        // gl::Disable(gl::CULL_FACE);
     }
 
     check_gl_error("During initialization");
@@ -213,7 +239,7 @@ fn main() {
 
     // window draw call
     wind.draw(move |_| {
-        draw(&shader_program, &particles_program, vao, vao_particles, &vertices, &indices, &camera_coordinates_rc.borrow(), *camera_zoom_rc.borrow(), &camera_rotation_rc.borrow());
+        draw(&shader_program, &particles_program, &lines_program, vao, vao_particles, vao_lines, &vertices, &indices, &camera_coordinates_rc.borrow(), *camera_zoom_rc.borrow());
     });
 
     // region: -- windowing
@@ -317,7 +343,7 @@ fn main() {
     }
 }
 
-fn draw(shader_program: &gl::types::GLuint, particles_program: &gl::types::GLuint, vao: GLuint, vao_particles: GLuint, vertices: &Vec<f32>, indices: &Vec<u16>, camera_coordinate: &(f32, f32), zoom: f32, camera_rotation: &(f32, f32)) {
+fn draw(shader_program: &GLuint, particles_program: &GLuint, lines_program: &gl::types::GLuint, vao: GLuint, vao_particles: GLuint, vao_lines: GLuint, vertices: &Vec<f32>, indices: &Vec<u16>, sphere_rotation: &(f32, f32), zoom: f32) {
     unsafe {
         // Clear the screen and depth buffer
         gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
@@ -327,6 +353,7 @@ fn draw(shader_program: &gl::types::GLuint, particles_program: &gl::types::GLuin
         gl::BindVertexArray(vao);
 
         // Draw the sphere
+        // gl::PolygonMode(gl::FRONT_AND_BACK, gl::LINE);
         gl::DrawElements(
             gl::TRIANGLES,
             indices.len() as i32,
@@ -334,20 +361,17 @@ fn draw(shader_program: &gl::types::GLuint, particles_program: &gl::types::GLuin
             ptr::null(),
         );
 
-        let camera_x = zoom * camera_coordinate.0.to_radians().cos() * camera_coordinate.1.to_radians().cos();
-        let camera_y = zoom * camera_coordinate.1.to_radians().sin();
-        let camera_z = zoom * camera_coordinate.0.to_radians().sin() * camera_coordinate.1.to_radians().cos();
-        // let rotation_matrix = Matrix4::from_angle_y(Deg(camera_rotation.0)) * Matrix4::from_angle_x(Deg(camera_rotation.1));
-        // let translation_matrix = Matrix4::from_translation(vec3(-camera_x, -camera_y, -camera_z));
-        // let view_matrix = rotation_matrix * translation_matrix;
-        // glLoadMatrixf(view_matrix.as_ptr());
+        let camera_x = zoom * sphere_rotation.0.to_radians().cos() * sphere_rotation.1.to_radians().cos();
+        let camera_y = zoom * sphere_rotation.1.to_radians().sin();
+        let camera_z = zoom * sphere_rotation.0.to_radians().sin() * sphere_rotation.1.to_radians().cos();
 
-        let projection = cgmath::perspective(Deg(45.0), W as f32 / H as f32, 0.1, 100.0);
-        let model = Matrix4::<f32>::identity(); // Model matrix, for example
         let eye = Point3::new(camera_x, camera_y, camera_z); // Camera's position
         let target = Point3::new(0.0, 0.0, 0.0); // Where the camera is looking
         let up = Vector3::new(0.0, 1.0, 0.0); // 'Up' direction in world space
+
         let view = Matrix4::look_at(eye, target, up);
+        let projection = cgmath::perspective(Deg(45.0), W as f32 / H as f32, 0.1, 100.0);
+        let model = Matrix4::<f32>::identity(); // Model matrix, for example
 
         let view_loc = gl::GetUniformLocation(*shader_program, CString::new("view").unwrap().as_ptr());
         let proj_loc = gl::GetUniformLocation(*shader_program, CString::new("projection").unwrap().as_ptr());
@@ -390,6 +414,24 @@ fn draw(shader_program: &gl::types::GLuint, particles_program: &gl::types::GLuin
         gl::UniformMatrix4fv(model_loc, 1, gl::FALSE, model.as_ptr());
         // gl::Uniform3fv(view_pos_location, 1, [camera_x, camera_y, camera_z].as_ptr());
         // END PARTICLES
+
+        // LINES
+        // Bind the shader program and VAO
+        gl::UseProgram(*lines_program);
+        gl::BindVertexArray(vao_lines);
+
+        gl::LineWidth(10.0);
+        gl::DrawArrays(gl::LINE_STRIP, 0, 100); // Draw updated particles
+
+        let view_loc = gl::GetUniformLocation(*lines_program, CString::new("view").unwrap().as_ptr());
+        let proj_loc = gl::GetUniformLocation(*lines_program, CString::new("projection").unwrap().as_ptr());
+        let model_loc = gl::GetUniformLocation(*lines_program, CString::new("model").unwrap().as_ptr());
+        // let view_pos_location = gl::GetUniformLocation(*particles_program, CString::new("viewPos").unwrap().as_ptr());
+        gl::UniformMatrix4fv(view_loc, 1, gl::FALSE, view.as_ptr());
+        gl::UniformMatrix4fv(proj_loc, 1, gl::FALSE, projection.as_ptr());
+        gl::UniformMatrix4fv(model_loc, 1, gl::FALSE, model.as_ptr());
+        // gl::Uniform3fv(view_pos_location, 1, [camera_x, camera_y, camera_z].as_ptr());
+        // END LINES
 
         // Unbind the VAO and the shader program
         gl::BindVertexArray(0);
