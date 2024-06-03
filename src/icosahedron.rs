@@ -3,24 +3,144 @@ use cgmath::{InnerSpace, Vector3};
 
 const PHI: f32 = (1.0 + 2.23606) / 2.0; // 2.236 is sqrt(5)
 
+fn get_indices() -> Vec<u16> {
+    vec![
+        11, 5, 0, 5, 1, 0, 1, 7, 0, 7, 10, 0, 10, 11, 0, 5, 9, 1, 11, 4, 5, 10, 2, 11, 7, 6, 10, 1,
+        8, 7, 9, 4, 3, 4, 2, 3, 2, 6, 3, 6, 8, 3, 8, 9, 3, 9, 5, 4, 4, 11, 2, 2, 10, 6, 6, 7, 8, 1,
+        9, 8,
+    ]
+}
+
 fn calculate_uv(x: f32, y: f32, z: f32) -> [f32; 5] {
     let length = (x * x + y * y + z * z).sqrt();
     let mut u = 0.5 + (z.atan2(x) / (2.0 * std::f32::consts::PI));
     let mut v = 0.5 - (y / length).asin() / std::f32::consts::PI;
 
-    if v == 0.0 {
-        println!("NORTH POLE!");
-        u = 0.5;
-    }
-
     [x, y, z, u, v]
 }
 
-fn compute_normals(vertices: &Vec<[f32; 5]>, indices: &Vec<u16>, duplicated_vertices: &HashMap<usize, usize>) -> Vec<[f32; 9]> {
+pub fn get_vertices() -> (Vec<[f32; 9]>, Vec<u16>) {
+    let mut vertices = vec![
+        calculate_uv(-1.0, PHI, 0.0),
+        calculate_uv(1.0, PHI, 0.0),
+        calculate_uv(-1.0, -PHI, 0.0),
+        calculate_uv(1.0, -PHI, 0.0),
+        calculate_uv(0.0, -1.0, PHI),
+        calculate_uv(0.0, 1.0, PHI),
+        calculate_uv(0.0, -1.0, -PHI),
+        calculate_uv(0.0, 1.0, -PHI),
+        calculate_uv(PHI, 0.0, -1.0),
+        calculate_uv(PHI, 0.0, 1.0),
+        calculate_uv(-PHI, 0.0, -1.0),
+        calculate_uv(-PHI, 0.0, 1.0),
+    ];
+    let mut indices = get_indices();
+    let (mut vertices, mut indices) = transform_to_unique_vertices(&vertices, &indices);
+    let (vertices, indices) = subdivide_icosahedron(&vertices, &indices);
+    let (vertices, indices) = subdivide_icosahedron(&vertices, &indices);
+    let (mut vertices, mut indices) = subdivide_icosahedron(&vertices, &indices);
+    let duplicated_vertices = repair_texture_wrap_seam(&mut vertices, &mut indices);
+    let vertices = compute_normals(&vertices, &indices, &duplicated_vertices);
+    (vertices, indices)
+}
+
+fn transform_to_unique_vertices(original_vertices: &Vec<[f32; 5]>, indices: &Vec<u16>) -> (Vec<[f32; 6]>, Vec<u16>) {
+    // Create a new vertices array where each triangle has unique vertices
+    let mut new_vertices = Vec::new();
+    let mut new_indices = Vec::new();
+    let mut index_count = 0;
+
+    // create duplicated vertices and add barys
+    for i in (0..indices.len()).step_by(3) {
+        {
+            let [x, y, z, u, v] = original_vertices[indices[i] as usize];
+            let bary = index_count % 3;
+            new_vertices.push([x, y, z, u, v, bary as f32]);
+        }
+        {
+            let [x, y, z, u, v] = original_vertices[indices[i + 1] as usize];
+            let bary = (index_count + 1) % 3;
+            new_vertices.push([x, y, z, u, v, bary as f32]);
+        }
+        {
+            let [x, y, z, u, v] = original_vertices[indices[i + 2] as usize];
+            let bary = (index_count + 2) % 3;
+            new_vertices.push([x, y, z, u, v, bary as f32]);
+        }
+
+        // Create new sequential indices
+        new_indices.push(index_count);
+        new_indices.push(index_count + 1);
+        new_indices.push(index_count + 2);
+        index_count += 3;
+    }
+    (new_vertices, new_indices)
+}
+
+fn subdivide_icosahedron(vertices: &Vec<[f32; 6]>, indices: &Vec<u16>) -> (Vec<[f32; 6]>, Vec<u16>) {
+    let mut new_vertices = vertices.clone();
+    let mut new_indices = Vec::new();
+    let mut midpoint_index_cache = HashMap::new();
+
+    // Iterate over each triangle and create 4 new ones
+    for chunk in indices.chunks(3) {
+        let v0 = chunk[0] as usize;
+        let v1 = chunk[1] as usize;
+        let v2 = chunk[2] as usize;
+
+        let v12 = vertex_for_edge(v1, v2, &vertices, &mut new_vertices, &mut midpoint_index_cache); // -> 0
+        let v20 = vertex_for_edge(v2, v0, &vertices, &mut new_vertices, &mut midpoint_index_cache); // -> 1
+        let v01 = vertex_for_edge(v0, v1, &vertices, &mut new_vertices, &mut midpoint_index_cache); // -> 2
+
+        new_indices.extend_from_slice(&[v0 as u16, v01, v20]);
+        new_indices.extend_from_slice(&[v01, v1 as u16, v12]);
+        new_indices.extend_from_slice(&[v20, v12, v2 as u16]);
+        new_indices.extend_from_slice(&[v01, v12, v20]);
+    }
+
+    (new_vertices, new_indices)
+}
+
+fn vertex_for_edge(v1: usize, v2: usize, vertices: &Vec<[f32; 6]>, new_vertices: &mut Vec<[f32; 6]>, cache: &mut HashMap<(usize, usize), u16>) -> u16 {
+    let key = if v1 < v2 { (v1, v2) } else { (v2, v1) };
+    if let Some(&index) = cache.get(&key) {
+        return index;
+    }
+    let p1 = &vertices[v1];
+    let p2 = &vertices[v2];
+    let mut midpoint = [
+        (p1[0] + p2[0]) / 2.0,
+        (p1[1] + p2[1]) / 2.0,
+        (p1[2] + p2[2]) / 2.0,
+        0.0,  // u, v will be calculated later
+        0.0,
+        3.0 - p1[5] - p2[5] // calculate bary; 3 minus the sum of the other two gives the correct bary
+    ];
+
+    // Normalize to same length as radius of sphere
+    let length_p1 = (p1[0] * p1[0] + p1[1] * p1[1] + p1[2] * p1[2]).sqrt();
+    let length = (midpoint[0] * midpoint[0] + midpoint[1] * midpoint[1] + midpoint[2] * midpoint[2]).sqrt();
+    midpoint[0] *= length_p1 / length;
+    midpoint[1] *= length_p1 / length;
+    midpoint[2] *= length_p1 / length;
+    // Calculate UV coordinates for the new vertex
+    // midpoint[3] = 0.5 + (midpoint[2].atan2(midpoint[0]) / (2.0 * std::f32::consts::PI));
+    // midpoint[4] = 0.5 - (midpoint[1] / length).asin() / std::f32::consts::PI;
+    let [x, y, z, u, v] = calculate_uv(midpoint[0], midpoint[1], midpoint[2]);
+    midpoint = [x, y, z, u, v, midpoint[5]];
+
+    let new_index = new_vertices.len() as u16;
+    new_vertices.push(midpoint);
+    cache.insert(key, new_index);
+    new_index
+}
+
+fn compute_normals(vertices: &Vec<[f32; 6]>, indices: &Vec<u16>, duplicated_vertices: &HashMap<usize, usize>) -> Vec<[f32; 9]> {
     let mut temp_normals: Vec<Vec<f32>> = vec![vec![0.0; 3]; vertices.len()];
     let mut final_vertices = vec![];
 
     // calculate normal for each triangle -> add it up to each vertex belonging to that triangle
+
     for chunk in indices.chunks(3) {
         let idx0 = chunk[0] as usize;
         let idx1 = chunk[1] as usize;
@@ -47,7 +167,6 @@ fn compute_normals(vertices: &Vec<[f32; 5]>, indices: &Vec<u16>, duplicated_vert
             temp_normals[i][2] += normal[2] / length;
         }
     }
-
     // make sure vertices on the same location have the same normal by combining both
     for (&old_index, &new_index) in duplicated_vertices.iter() {
         let old_normal = Vector3::new(
@@ -86,124 +205,14 @@ fn compute_normals(vertices: &Vec<[f32; 5]>, indices: &Vec<u16>, duplicated_vert
             temp_normals[i][2] / len, // Normal
             vertex[3],
             vertex[4], // UV Coordinates
-            i as f32
+            vertex[5] // bary
         ]);
     }
 
     final_vertices
 }
 
-pub fn get_vertices() -> (Vec<[f32; 9]>, Vec<u16>) {
-    let mut vertices = vec![
-        calculate_uv(-1.0, PHI, 0.0),
-        calculate_uv(1.0, PHI, 0.0),
-        calculate_uv(-1.0, -PHI, 0.0),
-        calculate_uv(1.0, -PHI, 0.0),
-        calculate_uv(0.0, -1.0, PHI),
-        calculate_uv(0.0, 1.0, PHI),
-        calculate_uv(0.0, -1.0, -PHI),
-        calculate_uv(0.0, 1.0, -PHI),
-        calculate_uv(PHI, 0.0, -1.0),
-        calculate_uv(PHI, 0.0, 1.0),
-        calculate_uv(-PHI, 0.0, -1.0),
-        calculate_uv(-PHI, 0.0, 1.0),
-    ];
-    let mut indices = get_indices();
-    // let (vertices, indices) = subdivide_icosahedron(&vertices, &indices);
-    // let (vertices, indices) = subdivide_icosahedron(&vertices, &indices);
-    // let (mut vertices, mut indices) = subdivide_icosahedron(&vertices, &indices);
-    let duplicated_vertices = repair_texture_wrap_seam(&mut vertices, &mut indices);
-    (compute_normals(&vertices, &indices, &duplicated_vertices), indices)
-}
-
-fn get_indices() -> Vec<u16> {
-    vec![
-        0, 5, 11,
-        0, 5, 1,
-        0, 1, 7, // 0, 1, 1
-        0, 10, 7, // 1, 1, 0
-        0, 10, 11, // 1, 2, 0
-        9, 1, 5, // 2, 0, 1
-        11, 4, 5, // 2, 1, 2
-        11, 2, 10, // 1, 2, 2
-        7, 6, 10, // 1, 0, 1
-        1, 8, 7,
-        9, 4, 3,
-        4, 2, 3,
-        2, 6, 3,
-        6, 8, 3,
-        8, 9, 3,
-        9, 5, 4,
-        4, 11, 2,
-        2, 10, 6,
-        6, 7, 8,
-        1, 9, 8,
-    ]
-}
-
-fn subdivide_icosahedron(vertices: &Vec<[f32; 5]>, indices: &Vec<u16>) -> (Vec<[f32; 5]>, Vec<u16>) {
-    let mut new_vertices = vertices.clone();
-    let mut new_indices = Vec::new();
-    let mut midpoint_index_cache = HashMap::new();
-
-    // Iterate over each triangle and create 4 new ones
-    for chunk in indices.chunks(3) {
-        let v0 = chunk[0] as usize;
-        let v1 = chunk[1] as usize;
-        let v2 = chunk[2] as usize;
-
-        let v12 = vertex_for_edge(v1, v2, &vertices, &mut new_vertices, &mut midpoint_index_cache); // -> 0
-        let v20 = vertex_for_edge(v2, v0, &vertices, &mut new_vertices, &mut midpoint_index_cache); // -> 1
-        let v01 = vertex_for_edge(v0, v1, &vertices, &mut new_vertices, &mut midpoint_index_cache); // -> 2
-
-        new_indices.extend_from_slice(&[v0 as u16, v20, v01]);
-        new_indices.extend_from_slice(&[v12, v1 as u16, v01]);
-        new_indices.extend_from_slice(&[v12, v20, v2 as u16]);
-        new_indices.extend_from_slice(&[v12, v20, v01]);
-    }
-
-    (new_vertices, new_indices)
-}
-
-// Function to find or create a vertex
-fn vertex_for_edge(
-    v1: usize,
-    v2: usize,
-    vertices: &Vec<[f32; 5]>,
-    new_vertices: &mut Vec<[f32; 5]>,
-    cache: &mut HashMap<(usize, usize), u16>
-) -> u16 {
-    let key = if v1 < v2 { (v1, v2) } else { (v2, v1) };
-    if let Some(&index) = cache.get(&key) {
-        return index;
-    }
-    let p1 = &vertices[v1];
-    let p2 = &vertices[v2];
-    let mut midpoint = [
-        (p1[0] + p2[0]) / 2.0,
-        (p1[1] + p2[1]) / 2.0,
-        (p1[2] + p2[2]) / 2.0,
-        0.0,  // u, v will be calculated later
-        0.0,
-    ];
-
-    // Normalize to place on unit sphere
-    let length = (midpoint[0] * midpoint[0] + midpoint[1] * midpoint[1] + midpoint[2] * midpoint[2]).sqrt() * 0.5;
-    midpoint[0] /= length;
-    midpoint[1] /= length;
-    midpoint[2] /= length;
-    // Calculate UV coordinates for the new vertex
-    // midpoint[3] = 0.5 + (midpoint[2].atan2(midpoint[0]) / (2.0 * std::f32::consts::PI));
-    // midpoint[4] = 0.5 - (midpoint[1] / length).asin() / std::f32::consts::PI;
-    midpoint = calculate_uv(midpoint[0], midpoint[1], midpoint[2]);
-
-    let new_index = new_vertices.len() as u16;
-    new_vertices.push(midpoint);
-    cache.insert(key, new_index);
-    new_index
-}
-
-fn repair_texture_wrap_seam(vertices: &mut Vec<[f32; 5]>, indices: &mut Vec<u16>) -> HashMap<usize, usize> {
+fn repair_texture_wrap_seam(vertices: &mut Vec<[f32; 6]>, indices: &mut Vec<u16>) -> HashMap<usize, usize> {
     let mut new_indices: Vec<u16> = Vec::new();
     let mut corrections = 0;
     // list of vertex indices and their corrected counterpart

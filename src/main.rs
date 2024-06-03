@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use cgmath::{Deg, Matrix, Matrix4, Point3, SquareMatrix, Vector3};
 use fltk::{app, image::IcoImage, prelude::*, window::GlWindow};
-use fltk::app::{event_button, event_dy, event_x, event_y, MouseButton, MouseWheel};
+use fltk::app::{event_button, event_dy, event_x, event_y, MouseButton, MouseWheel, sleep};
 use fltk::enums::{Event, Key};
 use gl::types::{GLchar, GLfloat, GLsizei, GLsizeiptr, GLuint};
 use rand::Rng;
@@ -73,7 +73,7 @@ fn main() {
         // add uv at location 2
         gl::VertexAttribPointer(2, 2, gl::FLOAT, gl::FALSE, stride, (6 * std::mem::size_of::<GLfloat>()) as *const _);
         gl::EnableVertexAttribArray(2);
-        // add index at location 3
+        // add bary at location 3
         gl::VertexAttribPointer(3, 1, gl::FLOAT, gl::FALSE, stride, (8 * std::mem::size_of::<GLfloat>()) as *const _);
         gl::EnableVertexAttribArray(3);
 
@@ -306,32 +306,33 @@ fn main() {
     while app.wait() {
         let current_time = Instant::now();
         let delta_ms = current_time.duration_since(last_time);
-        let keys = key_states.borrow();
-        let mut coordinates = camera_coordinates.borrow_mut();
-        let mut zoom = camera_zoom.borrow_mut();
+            let keys = key_states.borrow();
+            let mut coordinates = camera_coordinates.borrow_mut();
+            let mut zoom = camera_zoom.borrow_mut();
 
-        if *keys.get(&Key::from_char('w')).unwrap_or(&false) {
-            coordinates.1 += delta_ms.as_secs_f32() * CAMERA_SPEED;
-        }
-        if *keys.get(&Key::from_char('a')).unwrap_or(&false) {
-            coordinates.0 += delta_ms.as_secs_f32() * CAMERA_SPEED;
-        }
-        if *keys.get(&Key::from_char('r')).unwrap_or(&false) {
-            coordinates.1 -= delta_ms.as_secs_f32() * CAMERA_SPEED;
-        }
-        if *keys.get(&Key::from_char('s')).unwrap_or(&false) {
-            coordinates.0 -= delta_ms.as_secs_f32() * CAMERA_SPEED;
-        }
-        let zoom_target = *camera_zoom_target.borrow();
-        let zoom_diff = zoom_target - *zoom;
-        if zoom_diff > 0.0 {
-            *zoom += f32::max(zoom_diff * 0.05, f32::min(zoom_diff, 0.0001));
-        } else if zoom_diff < 0.0 {
-            *zoom += f32::min(zoom_diff * 0.05, f32::max(zoom_diff, -0.0001));
-        }
+            if *keys.get(&Key::from_char('w')).unwrap_or(&false) {
+                coordinates.1 += delta_ms.as_secs_f32() * CAMERA_SPEED;
+            }
+            if *keys.get(&Key::from_char('a')).unwrap_or(&false) {
+                coordinates.0 += delta_ms.as_secs_f32() * CAMERA_SPEED;
+            }
+            if *keys.get(&Key::from_char('r')).unwrap_or(&false) {
+                coordinates.1 -= delta_ms.as_secs_f32() * CAMERA_SPEED;
+            }
+            if *keys.get(&Key::from_char('s')).unwrap_or(&false) {
+                coordinates.0 -= delta_ms.as_secs_f32() * CAMERA_SPEED;
+            }
+            let zoom_target = *camera_zoom_target.borrow();
+            let zoom_diff = zoom_target - *zoom;
+            if zoom_diff > 0.0 {
+                *zoom += f32::max(zoom_diff * 0.05, f32::min(zoom_diff, 0.0001));
+            } else if zoom_diff < 0.0 {
+                *zoom += f32::min(zoom_diff * 0.05, f32::max(zoom_diff, -0.0001));
+            }
 
-        wind.redraw();
-        last_time = current_time;
+            wind.redraw();
+            sleep(0.016); // sleep 16ms for 60fps
+            last_time = current_time;
     }
     // endregion: -- windowing
 
