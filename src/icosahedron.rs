@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use cgmath::{InnerSpace, Vector3};
+use cgmath::num_traits::abs;
 
 const PHI: f32 = (1.0 + 2.23606) / 2.0; // 2.236 is sqrt(5)
 
@@ -40,7 +42,8 @@ pub fn get_vertices() -> (Vec<[f32; 9]>, Vec<u16>) {
     let (vertices, indices) = subdivide_icosahedron(&vertices, &indices);
     let (mut vertices, mut indices) = subdivide_icosahedron(&vertices, &indices);
     let duplicated_vertices = repair_texture_wrap_seam(&mut vertices, &mut indices);
-    let vertices = compute_normals(&vertices, &indices, &duplicated_vertices);
+    let mut vertices = compute_normals(&vertices, &indices, &duplicated_vertices);
+    fix_duplicate_vertices_normals(&mut vertices);
     (vertices, indices)
 }
 
@@ -168,6 +171,8 @@ fn compute_normals(vertices: &Vec<[f32; 6]>, indices: &Vec<u16>, duplicated_vert
         }
     }
     // make sure vertices on the same location have the same normal by combining both
+    // this only does this for the duplations that are needed to fix the tearing at the backside
+    // still needed because some normals are NaN here...
     for (&old_index, &new_index) in duplicated_vertices.iter() {
         let old_normal = Vector3::new(
             temp_normals[old_index][0],
@@ -267,4 +272,78 @@ fn repair_texture_wrap_seam(vertices: &mut Vec<[f32; 6]>, indices: &mut Vec<u16>
     indices.clear();
     indices.extend_from_slice(&new_indices);
     correction_list
+}
+
+
+// HELPER STUFF FOR FIXING NORMALS OF DUPLICATED VERTICES
+fn to_fixed_point(f: f32, scale: f32) -> i32 {
+    (f * scale).floor() as i32
+}
+
+#[derive(Eq, PartialEq, Hash)]
+struct Key {
+    x: i32,
+    y: i32,
+    z: i32,
+}
+
+impl Key {
+    fn new(data: &[f32; 9], scale: f32) -> Self {
+        Key {
+            x: to_fixed_point(data[0], scale),
+            y: to_fixed_point(data[1], scale),
+            z: to_fixed_point(data[2], scale),
+        }
+    }
+}
+
+fn find_duplicate_indices_based_on_first_three_elements(vec: &[[f32; 9]]) -> HashMap<Key, Vec<usize>> {
+    let mut index_map = HashMap::new();
+    // Record the index of each element
+    for (index, value) in vec.iter().enumerate() {
+        index_map.entry(Key::new(value, 10000.0)).or_insert_with(Vec::new).push(index);
+    }
+
+    // Filter to retain only those with duplicates
+    index_map.retain(|_, indices| indices.len() > 1);
+
+    index_map
+}
+
+fn fix_duplicate_vertices_normals(vertices: &mut Vec<[f32; 9]>) {
+    let vertices_clone = &vertices.clone();
+    let duplicates = find_duplicate_indices_based_on_first_three_elements(vertices_clone);
+
+    for indices in duplicates.values() {
+        let mut normal_acc = [0., 0., 0.];
+
+        for index in indices {
+            let v = vertices[*index];
+            normal_acc[0] += v[3];
+            normal_acc[1] += v[4];
+            normal_acc[2] += v[5];
+        }
+
+        let len = (normal_acc[0] * normal_acc[0]
+            + normal_acc[1] * normal_acc[1]
+            + normal_acc[2] * normal_acc[2])
+            .sqrt();
+
+        // Avoid bad normals
+        if (len.is_nan()) {
+            for index in indices {
+                println!("{:?}", vertices[*index][3]);
+                println!("{:?}", vertices[*index][4]);
+                println!("{:?}", vertices[*index][5]);
+            }
+        }
+
+        for index in indices {
+            if (!len.is_nan()) {
+                vertices[*index][3] = normal_acc[0] / len;
+                vertices[*index][4] = normal_acc[1] / len;
+                vertices[*index][5] = normal_acc[2] / len;
+            }
+        }
+    }
 }

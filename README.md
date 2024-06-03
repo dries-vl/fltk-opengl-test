@@ -13,3 +13,7 @@
 **Attempt at barycentric coordinates**
 
 ![fourth_sphere.jpg](fourth_sphere.jpg)
+
+**Sphere with hexagonal grid**
+
+![fifth_sphere.jpg](fifth_sphere.jpg)
