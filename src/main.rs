@@ -1,17 +1,18 @@
 // #![windows_subsystem="windows"]
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::CString;
 use std::ptr;
 use std::rc::Rc;
-use std::time::Instant;
+use std::thread::sleep_ms;
+use std::time::{Duration, Instant};
 
 use cgmath::{Deg, Matrix, Matrix4, Point3, SquareMatrix, Vector3};
 use fltk::{app, image::IcoImage, prelude::*, window::GlWindow};
 use fltk::app::{event_button, event_dy, event_x, event_y, MouseButton, MouseWheel, sleep};
 use fltk::enums::{Event, Key};
-use gl::types::{GLchar, GLfloat, GLsizei, GLsizeiptr, GLuint};
+use gl::types::{GLchar, GLfloat, GLint, GLsizei, GLsizeiptr, GLuint, GLuint64};
 use rand::Rng;
 
 mod icosahedron;
@@ -237,9 +238,43 @@ fn main() {
     const ZOOM_SPEED: f32 = 0.2;
     const DRAG_SPEED: f32 = 0.2;
 
+
+    // TIMING SHADERS
+    let mut shader_timings = Vec::new();
+    let mut timing_history: VecDeque<Vec<f32>> = VecDeque::with_capacity(10);
+
+    let mut update_timing_history = move |new_timings: Vec<f32>| -> Vec<f32> {
+        // Add new timing data to the deque
+        if timing_history.len() == 10 {
+            timing_history.pop_front(); // Remove the oldest entry if at capacity
+        }
+        timing_history.push_back(new_timings.clone());
+
+        // Compute the average timings for each shader
+        let num_entries = timing_history.len();
+        let num_shaders = new_timings.len();
+        let mut average_timings = vec![0.0; num_shaders];
+
+        for frame_timings in &timing_history {
+            for (i, timing) in frame_timings.iter().enumerate() {
+                average_timings[i] += timing;
+            }
+        }
+
+        for avg in &mut average_timings {
+            *avg /= num_entries as f32;
+        }
+
+        average_timings
+    };
+
     // window draw call
     wind.draw(move |_| {
-        draw(&shader_program, &particles_program, &lines_program, vao, vao_particles, vao_lines, &vertices, &indices, &camera_coordinates_rc.borrow(), *camera_zoom_rc.borrow());
+        shader_timings = draw(&shader_program, &particles_program, &lines_program, vao, vao_particles, vao_lines, &vertices, &indices, &camera_coordinates_rc.borrow(), *camera_zoom_rc.borrow());
+
+        // Update the timing history and calculate the average of the last ten frames
+        let average_shader_timings = update_timing_history(shader_timings.clone());
+        println!("Average shader timings over the last ten frames: {:?}", average_shader_timings);
     });
 
     // region: -- windowing
@@ -344,10 +379,29 @@ fn main() {
     }
 }
 
-fn draw(shader_program: &GLuint, particles_program: &GLuint, lines_program: &gl::types::GLuint, vao: GLuint, vao_particles: GLuint, vao_lines: GLuint, vertices: &Vec<f32>, indices: &Vec<u16>, sphere_rotation: &(f32, f32), zoom: f32) {
+fn draw(
+    shader_program: &GLuint,
+    particles_program: &GLuint,
+    lines_program: &gl::types::GLuint,
+    vao: GLuint,
+    vao_particles: GLuint,
+    vao_lines: GLuint,
+    vertices: &Vec<f32>,
+    indices: &Vec<u16>,
+    sphere_rotation: &(f32, f32),
+    zoom: f32
+) -> Vec<f32> {
     unsafe {
         // Clear the screen and depth buffer
         gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
+
+        // Timer objects
+        // TODO: time using program, setting uniforms and executing draw each
+        // TODO: create method for executing the shader program + measuring it with a macro
+        let mut queries = vec![0; 4]; // Assuming 2 shaders, hence 4 queries (2 per shader)
+        gl::GenQueries(4, queries.as_mut_ptr());
+
+        gl::BeginQuery(gl::TIME_ELAPSED, queries[0]); // time the execution
 
         // Bind the shader program and VAO
         gl::UseProgram(*shader_program);
@@ -361,6 +415,10 @@ fn draw(shader_program: &GLuint, particles_program: &GLuint, lines_program: &gl:
             gl::UNSIGNED_SHORT,
             ptr::null(),
         );
+
+        gl::EndQuery(gl::TIME_ELAPSED); // end the timer
+
+        gl::BeginQuery(gl::TIME_ELAPSED, queries[1]); // time the execution
 
         let camera_x = zoom * sphere_rotation.0.to_radians().cos() * sphere_rotation.1.to_radians().cos();
         let camera_y = zoom * sphere_rotation.1.to_radians().sin();
@@ -383,10 +441,13 @@ fn draw(shader_program: &GLuint, particles_program: &GLuint, lines_program: &gl:
         gl::UniformMatrix4fv(model_loc, 1, gl::FALSE, model.as_ptr());
         gl::Uniform3fv(view_pos_location, 1, [camera_x, camera_y, camera_z].as_ptr());
 
+        gl::EndQuery(gl::TIME_ELAPSED); // end the timer
+
         // Unbind the VAO and the shader program
         // gl::BindVertexArray(0);
         // gl::UseProgram(0);
 
+        gl::BeginQuery(gl::TIME_ELAPSED, queries[2]); // time the execution
         // PARTICLES
         // Bind the shader program and VAO
         gl::UseProgram(*particles_program);
@@ -415,7 +476,9 @@ fn draw(shader_program: &GLuint, particles_program: &GLuint, lines_program: &gl:
         gl::UniformMatrix4fv(model_loc, 1, gl::FALSE, model.as_ptr());
         // gl::Uniform3fv(view_pos_location, 1, [camera_x, camera_y, camera_z].as_ptr());
         // END PARTICLES
+        gl::EndQuery(gl::TIME_ELAPSED); // end the timer
 
+        gl::BeginQuery(gl::TIME_ELAPSED, queries[3]); // time the execution
         // LINES
         // Bind the shader program and VAO
         gl::UseProgram(*lines_program);
@@ -433,13 +496,25 @@ fn draw(shader_program: &GLuint, particles_program: &GLuint, lines_program: &gl:
         gl::UniformMatrix4fv(model_loc, 1, gl::FALSE, model.as_ptr());
         // gl::Uniform3fv(view_pos_location, 1, [camera_x, camera_y, camera_z].as_ptr());
         // END LINES
+        gl::EndQuery(gl::TIME_ELAPSED); // end the timer
 
         // Unbind the VAO and the shader program
         gl::BindVertexArray(0);
         gl::UseProgram(0);
 
+        // Retrieving and summing up the times
+        let mut timings = Vec::with_capacity(queries.len());
+        for (i, query) in queries.iter().enumerate() {
+            let mut time: GLint = 0;
+            let query_id = *query - 4; // -4 to get those of previous frame
+            gl::GetQueryObjectiv(query_id, gl::QUERY_RESULT, &mut time);
+            timings.push(time as f32 / 1_000_000.0);
+        }
+
+
         check_gl_error("During draw call");
 
+        timings
 
         // println!("rotation: {}, {}", camera_rotation.0, camera_rotation.1);
         // println!("position: {}, {}, {}", camera_x, camera_y, camera_z);

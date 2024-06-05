@@ -98,7 +98,7 @@ void main()
     float border = min(B1, min(B2, min(B3, min(B4, min(B5, B6)))));
     float a = 1.0 - sqrt(border);
     a = max(0.0, a);
-    result.x = a;
+    result -= a / 10.0;
 
 //    if (TexCoords.x > 1.0) {
 //        result += vec3(0.3);
